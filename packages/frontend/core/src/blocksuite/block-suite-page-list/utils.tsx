@@ -32,11 +32,9 @@ export const usePageHelper = (docCollection: Workspace) => {
     ) => {
       appSidebar.setHovering(false);
       const page = docsService.createDoc();
-
       if (mode) {
         docRecordList.doc$(page.id).value?.setPrimaryMode(mode);
       }
-
       if (options.show !== false) {
         workbench.openDoc(page.id, {
           at: options.at,

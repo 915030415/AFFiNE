@@ -1311,6 +1311,277 @@ class Entity<Props = {}> extends Component<Props> {
 }
 ```
 
+### 7. Store 类
+
+**文件位置**: `packages/common/infra/src/framework/core/components/store.ts`
+
+Store 是 AFFiNE Framework 中专门用于数据存储和状态管理的组件类型。它继承自 Component，具有依赖注入能力，专门负责管理应用程序的数据层。
+
+#### Store 的定义
+
+```typescript
+export class Store extends Component {
+  readonly __isStore = true;
+  readonly __injectable = true;
+}
+```
+
+#### Store 的核心特性
+
+1. **数据存储职责**：Store 专门负责数据的存储、检索和管理
+2. **可注入性**：通过 `__injectable = true` 标记，支持依赖注入
+3. **组件继承**：继承自 Component，拥有完整的生命周期管理
+4. **响应式数据**：与 LiveData 和 RxJS 深度集成，提供响应式数据流
+
+#### Store 的设计原则
+
+1. **单一职责**：每个 Store 只负责特定领域的数据管理
+2. **不可变性**：通过 LiveData 确保数据的不可变性
+3. **响应式**：所有数据变更都通过 Observable 流进行通知
+4. **可测试性**：通过依赖注入，便于单元测试和模拟
+
+#### Store 在 AFFiNE 中的实际应用
+
+##### DocsStore 示例
+
+**文件位置**: `packages/frontend/core/src/modules/doc/stores/docs.ts`
+
+```typescript
+export class DocsStore extends Store {
+  constructor(
+    private readonly workspaceService: WorkspaceService,
+    private readonly docPropertiesStore: DocPropertiesStore
+  ) {
+    super();
+  }
+
+  // 获取 BlockSuite 文档实例
+  getBlockSuiteDoc(id: string) {
+    return this.workspaceService.workspace.docCollection.getDoc(id);
+  }
+
+  // 创建新文档
+  createDoc(docId?: string) {
+    const id = docId ?? nanoid();
+    // 使用 Yjs 事务确保数据一致性
+    transact(
+      this.workspaceService.workspace.rootYDoc,
+      () => {
+        const docs = this.workspaceService.workspace.rootYDoc.getMap('meta').get('pages') as YArray<YMap<any>>;
+
+        docs.push([
+          new YMap([
+            ['id', id],
+            ['title', ''],
+            ['createDate', Date.now()],
+            ['tags', new YArray()],
+          ]),
+        ]);
+      },
+      { force: true }
+    );
+    return id;
+  }
+
+  // 监听文档ID变化的响应式数据流
+  watchDocIds() {
+    return yjsGetPath(this.workspaceService.workspace.rootYDoc.getMap('meta'), 'pages').pipe(
+      switchMap(yjsObserve),
+      map(meta => {
+        if (meta instanceof YArray) {
+          return meta.map(v => v.get('id') as string);
+        } else {
+          return [];
+        }
+      })
+    );
+  }
+
+  // 监听所有文档更新日期
+  watchAllDocUpdatedDate() {
+    return yjsGetPath(this.workspaceService.workspace.rootYDoc.getMap('meta'), 'pages').pipe(
+      switchMap(pages => yjsObservePath(pages, '*.updatedDate')),
+      map(pages => {
+        if (pages instanceof YArray) {
+          return pages.map(v => ({
+            id: v.get('id') as string,
+            updatedDate: v.get('updatedDate') as number | undefined,
+          }));
+        } else {
+          return [];
+        }
+      })
+    );
+  }
+}
+```
+
+#### Store 与其他组件的关系
+
+##### 1. Store 与 Service 的关系
+
+- **职责分离**：Service 负责业务逻辑，Store 负责数据存储
+- **依赖关系**：Service 通常依赖 Store 来获取和操作数据
+- **协作模式**：Service 调用 Store 的方法来实现业务功能
+
+```typescript
+// DocsService 使用 DocsStore
+export class DocsService extends Service {
+  constructor(
+    private readonly store: DocsStore, // 注入 Store
+    private readonly docPropertiesStore: DocPropertiesStore
+  ) {
+    super();
+  }
+
+  // Service 通过 Store 获取数据
+  allDocIds$() {
+    return this.store.watchDocIds();
+  }
+
+  // Service 通过 Store 操作数据
+  createDoc(options: DocCreateOptions = {}) {
+    const docId = this.store.createDoc(options.id);
+    // 业务逻辑处理...
+    return docId;
+  }
+}
+```
+
+##### 2. Store 与 Entity 的关系
+
+- **数据源**：Store 为 Entity 提供数据源
+- **持久化**：Entity 的状态变更通过 Store 进行持久化
+- **生命周期**：Entity 的创建和销毁可能涉及 Store 的数据操作
+
+```typescript
+// Entity 可能需要从 Store 获取数据
+export class Doc extends Entity<{ docId: string }> {
+  constructor() {
+    super();
+    // 可以通过框架获取 Store 实例
+    const docsStore = this.framework.get(DocsStore);
+    // 使用 Store 的数据...
+  }
+}
+```
+
+##### 3. Store 与 LiveData 的关系
+
+- **响应式基础**：Store 使用 LiveData 提供响应式数据
+- **数据流管理**：Store 的方法通常返回 Observable 或 LiveData
+- **状态同步**：通过 LiveData 确保 UI 与数据状态同步
+
+```typescript
+export class DocsStore extends Store {
+  // 返回 LiveData 类型的响应式数据
+  watchDocIds(): Observable<string[]> {
+    return this.yjsObservable.pipe(
+      map(data => data.docIds),
+      distinctUntilChanged()
+    );
+  }
+}
+
+// 在 React 组件中使用
+function DocumentList() {
+  const docsStore = useService(DocsStore);
+  const docIds = useLiveData(docsStore.watchDocIds());
+
+  return (
+    <div>
+      {docIds.map(id => <DocumentItem key={id} docId={id} />)}
+    </div>
+  );
+}
+```
+
+#### Store 的使用模式
+
+##### 1. 注册 Store
+
+```typescript
+// 在框架中注册 Store
+const framework = new Framework().store(DocsStore, [WorkspaceService, DocPropertiesStore]).store(DocPropertiesStore, [WorkspaceService]);
+```
+
+##### 2. 注入和使用 Store
+
+```typescript
+// 在 Service 中注入 Store
+export class DocumentService extends Service {
+  constructor(private readonly docsStore: DocsStore) {
+    super();
+  }
+
+  async createDocument(title: string) {
+    const docId = this.docsStore.createDoc();
+    // 其他业务逻辑...
+    return docId;
+  }
+}
+
+// 在 React 组件中使用 Store
+function useDocuments() {
+  const docsStore = useService(DocsStore);
+  return useLiveData(docsStore.watchDocIds());
+}
+```
+
+##### 3. Store 的测试
+
+```typescript
+// Store 的单元测试
+describe('DocsStore', () => {
+  let store: DocsStore;
+  let mockWorkspaceService: jest.Mocked<WorkspaceService>;
+
+  beforeEach(() => {
+    mockWorkspaceService = createMockWorkspaceService();
+    store = new DocsStore(mockWorkspaceService, mockDocPropertiesStore);
+  });
+
+  it('should create document with correct metadata', () => {
+    const docId = store.createDoc();
+    expect(docId).toBeDefined();
+    expect(mockWorkspaceService.workspace.docCollection.getDoc).toHaveBeenCalledWith(docId);
+  });
+});
+```
+
+#### Store 的最佳实践
+
+1. **保持简单**：Store 只负责数据操作，不包含复杂的业务逻辑
+2. **响应式设计**：所有数据访问都通过 Observable 进行
+3. **错误处理**：在 Store 层处理数据访问错误
+4. **性能优化**：使用适当的缓存和去重策略
+5. **类型安全**：充分利用 TypeScript 的类型系统
+
+```typescript
+export class OptimizedStore extends Store {
+  private cache = new Map<string, Observable<any>>();
+
+  // 带缓存的数据访问
+  watchData(key: string): Observable<any> {
+    if (!this.cache.has(key)) {
+      const observable = this.createDataObservable(key).pipe(
+        shareReplay(1), // 缓存最新值
+        distinctUntilChanged() // 去重
+      );
+      this.cache.set(key, observable);
+    }
+    return this.cache.get(key)!;
+  }
+
+  override dispose() {
+    this.cache.clear();
+    super.dispose();
+  }
+}
+```
+
+通过这种设计，Store 在 AFFiNE Framework 中扮演着数据层的核心角色，为整个应用提供了统一、响应式、可测试的数据管理解决方案。
+
 ## React 集成方案
 
 ### 1. FrameworkRoot 组件
@@ -2344,6 +2615,252 @@ class DebugService extends Service {
   }
 }
 ```
+
+## 核心概念关系总结
+
+### 服务、实体、Store、LiveData、作用域之间的关系
+
+在 AFFiNE Framework 中，这五个核心概念形成了一个完整的架构体系，它们各司其职又相互协作：
+
+#### 1. 概念定位与职责
+
+**作用域 (Scope)**
+
+- **定位**: 容器管理者，生命周期边界
+- **职责**: 管理服务实例的创建、存活和销毁，提供资源隔离
+- **特点**: 层级结构，支持嵌套，自动资源清理
+
+**服务 (Service)**
+
+- **定位**: 业务逻辑载体，功能提供者
+- **职责**: 封装业务逻辑，提供 API 接口，管理业务状态
+- **特点**: 可注入，长生命周期，跨组件共享
+
+**实体 (Entity)**
+
+- **定位**: 领域对象，数据模型
+- **职责**: 表示业务领域中的核心概念，封装数据和行为
+- **特点**: 短生命周期，按需创建，业务语义明确
+
+**Store**
+
+- **定位**: 状态管理中心，数据存储层
+- **职责**: 集中管理应用状态，提供响应式数据访问
+- **特点**: 基于 RxJS，响应式更新，与 React 深度集成
+
+**LiveData**
+
+- **定位**: 响应式数据容器，状态传播媒介
+- **职责**: 包装数据，提供变化通知，驱动 UI 更新
+- **特点**: 类型安全，自动订阅管理，性能优化
+
+#### 2. 关系图解
+
+```
+作用域 (Scope)
+├── 管理生命周期
+│   ├── 服务 (Service)
+│   │   ├── 使用 Store 管理状态
+│   │   ├── 创建和操作 Entity
+│   │   └── 暴露 LiveData 给组件
+│   ├── Store
+│   │   ├── 包含多个 LiveData
+│   │   ├── 响应 Service 的状态变更
+│   │   └── 为 React 组件提供数据
+│   └── Entity
+│       ├── 由 Service 创建和管理
+│       ├── 可以包含 LiveData
+│       └── 表示具体的业务对象
+└── LiveData
+    ├── 在 Service 中定义
+    ├── 在 Store 中集中管理
+    ├── 在 Entity 中表示状态
+    └── 在 React 组件中消费
+```
+
+#### 3. 数据流向
+
+```
+用户操作 → React 组件 → Service 方法调用
+    ↓
+Service 处理业务逻辑 → 更新 Store 状态
+    ↓
+Store 中的 LiveData 发生变化 → 通知所有订阅者
+    ↓
+React 组件通过 useLiveData 接收更新 → 重新渲染
+```
+
+#### 4. Store 是否为单例？
+
+**答案：不是严格的单例，而是作用域单例**
+
+- **作用域级别的单例**: 在同一个作用域内，Store 实例是唯一的
+- **跨作用域隔离**: 不同作用域可以有不同的 Store 实例
+- **生命周期绑定**: Store 的生命周期与其所在的作用域绑定
+
+```typescript
+// 示例：不同作用域有不同的 Store 实例
+<FrameworkScope scope={WorkspaceScope} props={{ workspaceId: "ws-1" }}>
+  {/* 这里的 DocumentStore 是 ws-1 专用的实例 */}
+  <DocumentList />
+</FrameworkScope>
+
+<FrameworkScope scope={WorkspaceScope} props={{ workspaceId: "ws-2" }}>
+  {/* 这里的 DocumentStore 是 ws-2 专用的实例，与上面完全隔离 */}
+  <DocumentList />
+</FrameworkScope>
+```
+
+#### 5. 为什么需要 Store 管理状态？
+
+虽然 Service 和 Entity 都可以包含状态，但 Store 有其独特的价值：
+
+##### Service 中的状态问题
+
+```typescript
+// Service 中的状态：分散、难以统一管理
+class UserService {
+  private currentUser: User | null = null;
+  private userList: User[] = [];
+  private loading: boolean = false;
+  // 状态分散在各个 Service 中，难以统一管理
+}
+
+class DocumentService {
+  private documents: Document[] = [];
+  private selectedDoc: Document | null = null;
+  // 又是一堆分散的状态...
+}
+```
+
+##### Entity 中的状态问题
+
+```typescript
+// Entity 中的状态：生命周期短，不适合全局状态
+class DocumentEntity {
+  private isEditing: boolean = false;
+  private lastSaved: Date = new Date();
+  // Entity 通常按需创建销毁，不适合存储需要持久化的状态
+}
+```
+
+##### Store 的优势
+
+**1. 集中化状态管理**
+
+```typescript
+class AppStore extends Store {
+  // 所有应用级状态集中管理
+  user$ = new LiveData<User | null>(null);
+  documents$ = new LiveData<Document[]>([]);
+  selectedDocument$ = new LiveData<Document | null>(null);
+  loading$ = new LiveData<boolean>(false);
+
+  // 派生状态
+  isLoggedIn$ = this.user$.map(user => user !== null);
+  documentCount$ = this.documents$.map(docs => docs.length);
+}
+```
+
+**2. 响应式数据流**
+
+```typescript
+// Store 提供统一的响应式接口
+class DocumentStore extends Store {
+  documents$ = new LiveData<Document[]>([]);
+
+  // Service 更新状态
+  updateDocuments(docs: Document[]) {
+    this.documents$.next(docs);
+  }
+
+  // React 组件自动响应变化
+  // const documents = useLiveData(store.documents$);
+}
+```
+
+**3. 状态持久化和同步**
+
+```typescript
+class PersistentStore extends Store {
+  constructor(private storage: StorageService) {
+    super();
+    this.loadFromStorage();
+    this.setupAutoSave();
+  }
+
+  private setupAutoSave() {
+    // 状态变化时自动保存
+    this.documents$.subscribe(docs => {
+      this.storage.save('documents', docs);
+    });
+  }
+}
+```
+
+**4. 跨组件状态共享**
+
+```typescript
+// 多个组件可以共享同一个 Store 的状态
+function DocumentList() {
+  const store = useStore(DocumentStore);
+  const documents = useLiveData(store.documents$);
+  return <div>{/* 文档列表 */}</div>;
+}
+
+function DocumentCounter() {
+  const store = useStore(DocumentStore); // 同一个 Store 实例
+  const count = useLiveData(store.documents$.map(docs => docs.length));
+  return <div>文档数量: {count}</div>;
+}
+```
+
+**5. 状态组合和计算**
+
+```typescript
+class ComputedStore extends Store {
+  users$ = new LiveData<User[]>([]);
+  documents$ = new LiveData<Document[]>([]);
+
+  // 复杂的状态计算
+  userDocumentMap$ = LiveData.combine([this.users$, this.documents$], (users, documents) => {
+    return users.map(user => ({
+      user,
+      documents: documents.filter(doc => doc.authorId === user.id),
+    }));
+  });
+}
+```
+
+#### 6. 最佳实践总结
+
+**分工明确**
+
+- **作用域**: 管理生命周期和资源隔离
+- **服务**: 处理业务逻辑和 API 调用
+- **Store**: 集中管理状态和提供响应式数据
+- **Entity**: 表示业务对象和封装领域逻辑
+- **LiveData**: 作为数据传输和变化通知的载体
+
+**协作模式**
+
+```typescript
+// 典型的协作流程
+class DocumentWorkflow {
+  // 1. 作用域管理整个工作流的生命周期
+  // 2. Service 处理业务逻辑
+  async createDocument(title: string) {
+    const doc = new DocumentEntity({ title }); // 3. 创建 Entity
+    await this.api.saveDocument(doc);
+    this.store.addDocument(doc); // 4. 更新 Store
+  }
+
+  // 5. Store 中的 LiveData 通知 React 组件更新
+  // 6. React 组件通过 useLiveData 接收更新
+}
+```
+
+这种架构设计实现了关注点分离、状态集中管理、响应式更新和良好的可测试性，是大型前端应用的理想选择。
 
 ## 总结
 

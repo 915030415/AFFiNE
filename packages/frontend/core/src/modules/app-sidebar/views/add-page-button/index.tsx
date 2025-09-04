@@ -47,6 +47,7 @@ const useNewDoc = () => {
   const createPage = useAsyncCallback(
     async (e?: MouseEvent, mode?: DocMode) => {
       if (enablePageTemplate && pageTemplateDocId) {
+        // 有模版  且有模版id的情况下
         const docId =
           await docsService.duplicateFromTemplate(pageTemplateDocId);
         workbench.openDoc(docId, { at: inferOpenMode(e) });
